@@ -17,7 +17,7 @@ namespace TPDSSDataManager
         private ObservableCollection<TreeNode> _treeNodes = new ObservableCollection<TreeNode>();
 
         private readonly DatabaseManager _dbManager;
-        private readonly string CURRENT_VERSION = "1.3.0";
+        private readonly string CURRENT_VERSION = "1.4.0";
 
         public MainWindow()
         {

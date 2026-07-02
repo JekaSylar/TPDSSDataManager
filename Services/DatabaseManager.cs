@@ -68,7 +68,6 @@ namespace TPDSSDataManager.Services
                             parentNode.Children.Add(new TreeNode { Name = sp, Parent = parentNode });
                         }
                     }
-                    // Добавляем без Dispatcher, так как мы вернем коллекцию в UI-поток после await
                     rootList.Add(parentNode);
                 }
             });
@@ -81,6 +80,7 @@ namespace TPDSSDataManager.Services
         {
             await Task.Run(() =>
             {
+                var logger = new SimpleLogger(outputDir);
                 DBEngine engine = new DBEngine();
 
                 for (int i = 0; i < tasksToRun.Count; i++)
@@ -89,16 +89,22 @@ namespace TPDSSDataManager.Services
                     string num = string.IsNullOrEmpty(task.Prefix) ? $"upd_{i}" : task.Prefix;
                     string newPath = Path.Combine(outputDir, $"pl_srv_{num}.accdb");
 
-                    File.Copy(sourcePath, newPath, true);
-                    FilterSspInFile(engine, newPath, task.SspName, task.SpName);
-
-                    // Сообщаем UI потоку об обновлении статуса
-                    progress?.Report($"Створено: pl_srv_{num}.accdb");
+                    try
+                    {
+                        File.Copy(sourcePath, newPath, true);
+                        FilterSspInFile(engine, newPath, task.SspName, task.SpName, logger);
+                        progress?.Report($"Створено: pl_srv_{num}.accdb");
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError($"Split - {num}", ex.Message);
+                        progress?.Report($"Помилка створення: pl_srv_{num}.accdb");
+                    }
                 }
             });
         }
 
-        private void FilterSspInFile(DBEngine engine, string path, string sspName, string? spName)
+        private void FilterSspInFile(DBEngine engine, string path, string sspName, string? spName, SimpleLogger logger)
         {
             Database db = engine.OpenDatabase(path);
             string cleanSsp = sspName.Replace("'", "''");
@@ -112,10 +118,13 @@ namespace TPDSSDataManager.Services
                     if (!string.IsNullOrEmpty(spName))
                     {
                         string cleanSp = spName.Replace("'", "''");
-                        try { db.Execute($"DELETE FROM [{tableName}] WHERE [Назва СП] <> '{cleanSp}' AND [Назва СП] IS NOT NULL"); } catch { }
+                        db.Execute($"DELETE FROM [{tableName}] WHERE [Назва СП] <> '{cleanSp}' AND [Назва СП] IS NOT NULL");
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    logger.LogError($"FilterSspInFile ({tableName})", ex.Message);
+                }
             }
             db.Close();
         }
@@ -123,74 +132,149 @@ namespace TPDSSDataManager.Services
         // Метод об'єднання (Merge)
         public async Task MergeDatabasesAsync(List<string> mergeFiles, string resultPath, IProgress<string> progress)
         {
+            if (mergeFiles == null || mergeFiles.Count == 0) return;
+
             await Task.Run(() =>
             {
+                string targetDir = Path.GetDirectoryName(resultPath) ?? string.Empty;
+                var logger = new SimpleLogger(targetDir);
                 DBEngine engine = new DBEngine();
-                File.Copy(mergeFiles[0], resultPath, true);
-                Database dbRes = engine.OpenDatabase(resultPath);
 
-                foreach (var t in _tables)
+                try
                 {
-                    try { dbRes.Execute($"DELETE * FROM [{t}]"); } catch { }
+                    // 1. Берем ПЕРВЫЙ файл как основу (сохраняем оригинальные ID и структуры)
+                    File.Copy(mergeFiles[0], resultPath, true);
                 }
-                dbRes.Close();
-
-                foreach (var sourceFile in mergeFiles)
+                catch (Exception ex)
                 {
-                    progress?.Report($"Обробка: {Path.GetFileName(sourceFile)}");
+                    logger.LogError("Merge - Копіювання базового файлу", ex.Message);
+                    progress?.Report("Помилка створення базового файлу!");
+                    return;
+                }
 
-                    Database dbSrc = engine.OpenDatabase(sourceFile);
-                    Database dbDst = engine.OpenDatabase(resultPath);
+                // 2. Начинаем цикл со ВТОРОГО файла (индекс 1)
+                for (int i = 1; i < mergeFiles.Count; i++)
+                {
+                    string sourceFile = mergeFiles[i];
+                    string fileName = Path.GetFileName(sourceFile);
+                    progress?.Report($"Обробка: {fileName}");
 
-                    foreach (var tableName in _tables)
+                    Database? dbDst = null;
+                    try
                     {
-                        try
-                        {
-                            Recordset rsSrc = dbSrc.OpenRecordset($"SELECT * FROM [{tableName}]");
-                            Recordset rsDst = dbDst.OpenRecordset($"SELECT * FROM [{tableName}]");
+                        dbDst = engine.OpenDatabase(resultPath);
 
-                            while (!rsSrc.EOF)
+                        foreach (var tableName in _tables)
+                        {
+                            try
                             {
-                                rsDst.AddNew();
-                                for (int i = 1; i < rsSrc.Fields.Count; i++)
+                                Recordset rsDstDef = dbDst.OpenRecordset($"SELECT * FROM [{tableName}] WHERE 1=0");
+
+                                List<string> normalFields = new List<string>();
+                                List<string> complexFields = new List<string>();
+
+                                for (int f = 0; f < rsDstDef.Fields.Count; f++)
                                 {
-                                    Field fld = rsSrc.Fields[i];
+                                    Field fld = rsDstDef.Fields[f];
+                                    if ((short)fld.Type >= 101)
+                                        complexFields.Add(fld.Name);
+                                    else
+                                        normalFields.Add(fld.Name);
+                                }
+                                rsDstDef.Close();
+
+                                // Шаг А: Обход блокировки IN через создание временной привязки (Linked Table)
+                                if (normalFields.Count > 0)
+                                {
+                                    string linkedTableName = $"Link_{Guid.NewGuid().ToString("N").Substring(0, 6)}";
+
+                                    // Программно линкуем таблицу из внешнего файла
+                                    TableDef tdf = dbDst.CreateTableDef(linkedTableName);
+                                    tdf.Connect = $";DATABASE={sourceFile}";
+                                    tdf.SourceTableName = tableName;
+                                    dbDst.TableDefs.Append(tdf);
+
                                     try
                                     {
-                                        if ((short)fld.Type >= 101)
-                                        {
-                                            Recordset2 childSrc = (Recordset2)fld.Value;
-                                            Recordset2 childDst = (Recordset2)rsDst.Fields[fld.Name].Value;
-
-                                            if (childSrc != null)
-                                            {
-                                                while (!childSrc.EOF)
-                                                {
-                                                    childDst.AddNew();
-                                                    childDst.Fields[0].Value = childSrc.Fields[0].Value;
-                                                    childDst.Update();
-                                                    childSrc.MoveNext();
-                                                }
-                                            }
-                                        }
-                                        else
-                                        {
-                                            rsDst.Fields[fld.Name].Value = fld.Value;
-                                        }
+                                        string fieldsList = string.Join(", ", normalFields.Select(f => $"[{f}]"));
+                                        // Теперь IN не нужен, Access думает, что таблица локальная
+                                        string sqlInsert = $"INSERT INTO [{tableName}] ({fieldsList}) SELECT {fieldsList} FROM [{linkedTableName}]";
+                                        dbDst.Execute(sqlInsert, 128);
                                     }
-                                    catch { }
+                                    finally
+                                    {
+                                        // Обязательно удаляем линк после вставки, даже если была ошибка
+                                        dbDst.TableDefs.Delete(linkedTableName);
+                                    }
                                 }
-                                rsDst.Update();
-                                rsSrc.MoveNext();
+
+                                // Шаг Б: Дописываем чекбоксы/MVF
+                                if (complexFields.Count > 0)
+                                {
+                                    Database dbSrc = engine.OpenDatabase(sourceFile);
+                                    Recordset rsSrc = dbSrc.OpenRecordset($"SELECT * FROM [{tableName}]");
+
+                                    string pkName = normalFields.FirstOrDefault(f => f.Equals("Ідентифікатор", StringComparison.OrdinalIgnoreCase)) ?? normalFields[0];
+
+                                    while (!rsSrc.EOF)
+                                    {
+                                        object pkValue = rsSrc.Fields[pkName].Value;
+                                        if (pkValue != null)
+                                        {
+                                            string pkCondition = (pkValue is string) ? $"'{pkValue.ToString().Replace("'", "''")}'" : pkValue.ToString();
+                                            Recordset rsDst = dbDst.OpenRecordset($"SELECT * FROM [{tableName}] WHERE [{pkName}] = {pkCondition}");
+
+                                            if (!rsDst.EOF)
+                                            {
+                                                rsDst.Edit();
+                                                foreach (string cField in complexFields)
+                                                {
+                                                    Recordset2 childSrc = (Recordset2)rsSrc.Fields[cField].Value;
+                                                    Recordset2 childDst = (Recordset2)rsDst.Fields[cField].Value;
+
+                                                    if (childSrc != null && !childSrc.EOF)
+                                                    {
+                                                        childSrc.MoveFirst();
+                                                        while (!childSrc.EOF)
+                                                        {
+                                                            childDst.AddNew();
+                                                            for (int c = 0; c < childSrc.Fields.Count; c++)
+                                                            {
+                                                                try { childDst.Fields[c].Value = childSrc.Fields[c].Value; }
+                                                                catch (Exception fieldEx) { logger.LogError($"Merge MVF Field ({tableName} -> {cField})", fieldEx.Message); }
+                                                            }
+                                                            childDst.Update();
+                                                            childSrc.MoveNext();
+                                                        }
+                                                    }
+                                                }
+                                                rsDst.Update();
+                                            }
+                                            rsDst.Close();
+                                        }
+                                        rsSrc.MoveNext();
+                                    }
+                                    rsSrc.Close();
+                                    dbSrc.Close();
+                                }
                             }
-                            rsSrc.Close();
-                            rsDst.Close();
+                            catch (Exception ex)
+                            {
+                                logger.LogError($"Merge Table ({tableName}) in {fileName}", ex.Message);
+                                progress?.Report($"Помилка у таблиці {tableName}. Див. лог.");
+                            }
                         }
-                        catch { }
                     }
-                    dbSrc.Close();
-                    dbDst.Close();
+                    catch (Exception ex)
+                    {
+                        logger.LogError($"Merge File Access ({fileName})", ex.Message);
+                    }
+                    finally
+                    {
+                        dbDst?.Close();
+                    }
                 }
+                progress?.Report("Склейка завершена!");
             });
         }
     }
