@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Office.Interop.Access.Dao;
 using TPDSSDataManager.Models;
@@ -13,7 +14,7 @@ namespace TPDSSDataManager.Services
     {
         private readonly string[] _tables = { "ТП ДСС(4рівень)", "ТП ДСС_123" };
 
-        // Метод анализа базы данных и построения дерева
+        // Метод аналізу бази даних і побудови дерева
         public async Task<ObservableCollection<TreeNode>> LoadSspTreeAsync(string path)
         {
             var rootList = new ObservableCollection<TreeNode>();
@@ -129,8 +130,8 @@ namespace TPDSSDataManager.Services
             db.Close();
         }
 
-        // Метод об'єднання (Merge)
-        public async Task MergeDatabasesAsync(List<string> mergeFiles, string resultPath, IProgress<string> progress)
+        // Метод об'єднання (Merge) - ТЕПЕР ПРИЙМАЄ 4 АРГУМЕНТИ (додано CancellationToken)
+        public async Task MergeDatabasesAsync(List<string> mergeFiles, string resultPath, IProgress<string> progress, CancellationToken cancellationToken)
         {
             if (mergeFiles == null || mergeFiles.Count == 0) return;
 
@@ -142,19 +143,37 @@ namespace TPDSSDataManager.Services
 
                 try
                 {
-                    // 1. Берем ПЕРВЫЙ файл как основу (сохраняем оригинальные ID и структуры)
+                    // Перевіряємо, чи не натиснули відміну ще до початку
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // 1. Створюємо ПОРОЖНЮ ОБОЛОНКУ з першого файлу. 
+                    progress?.Report("Створення базового файлу (шаблону)...");
                     File.Copy(mergeFiles[0], resultPath, true);
+                    Database dbShell = engine.OpenDatabase(resultPath);
+                    foreach (var tableName in _tables)
+                    {
+                        try { dbShell.Execute($"DELETE * FROM [{tableName}]"); }
+                        catch (Exception ex) { logger.LogError($"Merge - Очищення таблиці {tableName}", ex.Message); }
+                    }
+                    dbShell.Close();
+                }
+                catch (OperationCanceledException)
+                {
+                    throw; // Перекидаємо помилку скасування далі
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError("Merge - Копіювання базового файлу", ex.Message);
+                    logger.LogError("Merge - Створення базового файлу", ex.Message);
                     progress?.Report("Помилка створення базового файлу!");
                     return;
                 }
 
-                // 2. Начинаем цикл со ВТОРОГО файла (индекс 1)
-                for (int i = 1; i < mergeFiles.Count; i++)
+                // 2. Збираємо дані зі ВСІХ файлів
+                for (int i = 0; i < mergeFiles.Count; i++)
                 {
+                    // Перевіряємо на кожному кроці циклу, чи користувач не натиснув "Скасувати"
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     string sourceFile = mergeFiles[i];
                     string fileName = Path.GetFileName(sourceFile);
                     progress?.Report($"Обробка: {fileName}");
@@ -172,6 +191,7 @@ namespace TPDSSDataManager.Services
 
                                 List<string> normalFields = new List<string>();
                                 List<string> complexFields = new List<string>();
+                                string pkName = "Ідентифікатор";
 
                                 for (int f = 0; f < rsDstDef.Fields.Count; f++)
                                 {
@@ -183,12 +203,15 @@ namespace TPDSSDataManager.Services
                                 }
                                 rsDstDef.Close();
 
-                                // Шаг А: Обход блокировки IN через создание временной привязки (Linked Table)
+                                // Якщо Ідентифікатор має іншу назву
+                                if (!normalFields.Contains(pkName) && normalFields.Count > 0)
+                                    pkName = normalFields.FirstOrDefault(f => f.Equals("Ідентифікатор", StringComparison.OrdinalIgnoreCase)) ?? normalFields[0];
+
+                                // Крок А: Вставка звичайних полів (збереження ID)
                                 if (normalFields.Count > 0)
                                 {
                                     string linkedTableName = $"Link_{Guid.NewGuid().ToString("N").Substring(0, 6)}";
 
-                                    // Программно линкуем таблицу из внешнего файла
                                     TableDef tdf = dbDst.CreateTableDef(linkedTableName);
                                     tdf.Connect = $";DATABASE={sourceFile}";
                                     tdf.SourceTableName = tableName;
@@ -197,24 +220,20 @@ namespace TPDSSDataManager.Services
                                     try
                                     {
                                         string fieldsList = string.Join(", ", normalFields.Select(f => $"[{f}]"));
-                                        // Теперь IN не нужен, Access думает, что таблица локальная
                                         string sqlInsert = $"INSERT INTO [{tableName}] ({fieldsList}) SELECT {fieldsList} FROM [{linkedTableName}]";
                                         dbDst.Execute(sqlInsert, 128);
                                     }
                                     finally
                                     {
-                                        // Обязательно удаляем линк после вставки, даже если была ошибка
                                         dbDst.TableDefs.Delete(linkedTableName);
                                     }
                                 }
 
-                                // Шаг Б: Дописываем чекбоксы/MVF
+                                // Крок Б: Копіювання багатозначних полів (MVF)
                                 if (complexFields.Count > 0)
                                 {
                                     Database dbSrc = engine.OpenDatabase(sourceFile);
                                     Recordset rsSrc = dbSrc.OpenRecordset($"SELECT * FROM [{tableName}]");
-
-                                    string pkName = normalFields.FirstOrDefault(f => f.Equals("Ідентифікатор", StringComparison.OrdinalIgnoreCase)) ?? normalFields[0];
 
                                     while (!rsSrc.EOF)
                                     {
@@ -229,22 +248,35 @@ namespace TPDSSDataManager.Services
                                                 rsDst.Edit();
                                                 foreach (string cField in complexFields)
                                                 {
-                                                    Recordset2 childSrc = (Recordset2)rsSrc.Fields[cField].Value;
-                                                    Recordset2 childDst = (Recordset2)rsDst.Fields[cField].Value;
+                                                    Recordset2? childSrc = rsSrc.Fields[cField].Value as Recordset2;
+                                                    Recordset2? childDst = rsDst.Fields[cField].Value as Recordset2;
 
-                                                    if (childSrc != null && !childSrc.EOF)
+                                                    if (childSrc != null && childDst != null)
                                                     {
-                                                        childSrc.MoveFirst();
-                                                        while (!childSrc.EOF)
+                                                        if (!childDst.EOF)
                                                         {
-                                                            childDst.AddNew();
-                                                            for (int c = 0; c < childSrc.Fields.Count; c++)
+                                                            childDst.MoveFirst();
+                                                            while (!childDst.EOF)
                                                             {
-                                                                try { childDst.Fields[c].Value = childSrc.Fields[c].Value; }
-                                                                catch (Exception fieldEx) { logger.LogError($"Merge MVF Field ({tableName} -> {cField})", fieldEx.Message); }
+                                                                try { childDst.Delete(); } catch { }
+                                                                childDst.MoveNext();
                                                             }
-                                                            childDst.Update();
-                                                            childSrc.MoveNext();
+                                                        }
+
+                                                        if (!childSrc.EOF)
+                                                        {
+                                                            childSrc.MoveFirst();
+                                                            while (!childSrc.EOF)
+                                                            {
+                                                                childDst.AddNew();
+                                                                for (int c = 0; c < childSrc.Fields.Count; c++)
+                                                                {
+                                                                    try { childDst.Fields[c].Value = childSrc.Fields[c].Value; }
+                                                                    catch (Exception fieldEx) { logger.LogError($"Merge MVF Field ({tableName} -> {cField})", fieldEx.Message); }
+                                                                }
+                                                                childDst.Update();
+                                                                childSrc.MoveNext();
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -274,8 +306,9 @@ namespace TPDSSDataManager.Services
                         dbDst?.Close();
                     }
                 }
-                progress?.Report("Склейка завершена!");
-            });
+
+                progress?.Report("Склейка завершена успішно!");
+            }, cancellationToken);
         }
     }
 }

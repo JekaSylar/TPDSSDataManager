@@ -12,8 +12,7 @@ namespace TPDSSDataManager.Services
         {
             _logFilePath = Path.Combine(targetDirectory, "TPDSS_Errors.txt");
 
-            // Удаляем старый лог при каждом новом запуске операции, 
-            // чтобы пользователь не видел ошибки с прошлых попыток
+            // Видаляємо старий лог при кожному новому запуску операції
             if (File.Exists(_logFilePath))
             {
                 try { File.Delete(_logFilePath); } catch { }
@@ -24,7 +23,6 @@ namespace TPDSSDataManager.Services
         {
             try
             {
-                // Если файл уже есть и он огромный, сбрасываем его
                 if (File.Exists(_logFilePath))
                 {
                     FileInfo fi = new FileInfo(_logFilePath);
@@ -33,7 +31,6 @@ namespace TPDSSDataManager.Services
 
                 string logEntry = $"[{DateTime.Now:dd.MM.yyyy HH:mm:ss}] [{context}] {errorMessage}{Environment.NewLine}";
 
-                // Записываем ошибку. Файл создастся только в этот момент!
                 File.AppendAllText(_logFilePath, logEntry);
             }
             catch { }
