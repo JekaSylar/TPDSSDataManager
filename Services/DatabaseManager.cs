@@ -114,12 +114,13 @@ namespace TPDSSDataManager.Services
             {
                 try
                 {
-                    db.Execute($"DELETE FROM [{tableName}] WHERE [Назва ССП] <> '{cleanSsp}'");
+                    // ВИПРАВЛЕНО: Додано видалення пустих рядків (IS NULL) щоб вони не множилися
+                    db.Execute($"DELETE FROM [{tableName}] WHERE [Назва ССП] <> '{cleanSsp}' OR [Назва ССП] IS NULL");
 
                     if (!string.IsNullOrEmpty(spName))
                     {
                         string cleanSp = spName.Replace("'", "''");
-                        db.Execute($"DELETE FROM [{tableName}] WHERE [Назва СП] <> '{cleanSp}' AND [Назва СП] IS NOT NULL");
+                        db.Execute($"DELETE FROM [{tableName}] WHERE [Назва СП] <> '{cleanSp}' OR [Назва СП] IS NULL");
                     }
                 }
                 catch (Exception ex)
@@ -130,7 +131,7 @@ namespace TPDSSDataManager.Services
             db.Close();
         }
 
-        // Метод об'єднання (Merge) - ТЕПЕР ПРИЙМАЄ 4 АРГУМЕНТИ (додано CancellationToken)
+        // Метод об'єднання (Merge)
         public async Task MergeDatabasesAsync(List<string> mergeFiles, string resultPath, IProgress<string> progress, CancellationToken cancellationToken)
         {
             if (mergeFiles == null || mergeFiles.Count == 0) return;
@@ -143,10 +144,8 @@ namespace TPDSSDataManager.Services
 
                 try
                 {
-                    // Перевіряємо, чи не натиснули відміну ще до початку
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    // 1. Створюємо ПОРОЖНЮ ОБОЛОНКУ з першого файлу. 
                     progress?.Report("Створення базового файлу (шаблону)...");
                     File.Copy(mergeFiles[0], resultPath, true);
                     Database dbShell = engine.OpenDatabase(resultPath);
@@ -159,7 +158,7 @@ namespace TPDSSDataManager.Services
                 }
                 catch (OperationCanceledException)
                 {
-                    throw; // Перекидаємо помилку скасування далі
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -168,10 +167,8 @@ namespace TPDSSDataManager.Services
                     return;
                 }
 
-                // 2. Збираємо дані зі ВСІХ файлів
                 for (int i = 0; i < mergeFiles.Count; i++)
                 {
-                    // Перевіряємо на кожному кроці циклу, чи користувач не натиснув "Скасувати"
                     cancellationToken.ThrowIfCancellationRequested();
 
                     string sourceFile = mergeFiles[i];
@@ -203,11 +200,10 @@ namespace TPDSSDataManager.Services
                                 }
                                 rsDstDef.Close();
 
-                                // Якщо Ідентифікатор має іншу назву
                                 if (!normalFields.Contains(pkName) && normalFields.Count > 0)
                                     pkName = normalFields.FirstOrDefault(f => f.Equals("Ідентифікатор", StringComparison.OrdinalIgnoreCase)) ?? normalFields[0];
 
-                                // Крок А: Вставка звичайних полів (збереження ID)
+                                // Крок А: Вставка звичайних полів
                                 if (normalFields.Count > 0)
                                 {
                                     string linkedTableName = $"Link_{Guid.NewGuid().ToString("N").Substring(0, 6)}";
@@ -220,7 +216,12 @@ namespace TPDSSDataManager.Services
                                     try
                                     {
                                         string fieldsList = string.Join(", ", normalFields.Select(f => $"[{f}]"));
-                                        string sqlInsert = $"INSERT INTO [{tableName}] ({fieldsList}) SELECT {fieldsList} FROM [{linkedTableName}]";
+
+                                        // ВИПРАВЛЕНО: Фільтруємо пусті рядки (сміття), щоб вони не потрапили у фінальну базу
+                                        bool hasSspColumn = normalFields.Any(f => f.Equals("Назва ССП", StringComparison.OrdinalIgnoreCase));
+                                        string whereClause = hasSspColumn ? " WHERE [Назва ССП] IS NOT NULL" : "";
+
+                                        string sqlInsert = $"INSERT INTO [{tableName}] ({fieldsList}) SELECT {fieldsList} FROM [{linkedTableName}]{whereClause}";
                                         dbDst.Execute(sqlInsert, 128);
                                     }
                                     finally
@@ -233,7 +234,13 @@ namespace TPDSSDataManager.Services
                                 if (complexFields.Count > 0)
                                 {
                                     Database dbSrc = engine.OpenDatabase(sourceFile);
-                                    Recordset rsSrc = dbSrc.OpenRecordset($"SELECT * FROM [{tableName}]");
+
+                                    // ВИПРАВЛЕНО: Тут також відсікаємо пусті рядки, щоб не шукати для них MVF галочки
+                                    string srcQuery = normalFields.Any(f => f.Equals("Назва ССП", StringComparison.OrdinalIgnoreCase))
+                                        ? $"SELECT * FROM [{tableName}] WHERE [Назва ССП] IS NOT NULL"
+                                        : $"SELECT * FROM [{tableName}]";
+
+                                    Recordset rsSrc = dbSrc.OpenRecordset(srcQuery);
 
                                     while (!rsSrc.EOF)
                                     {

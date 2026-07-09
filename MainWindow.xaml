@@ -36,7 +36,6 @@
                                 <Setter TargetName="btnBorder" Property="Background" Value="#03DAC6"/>
                                 <Setter Property="Foreground" Value="Black"/>
                             </Trigger>
-                            <!-- Коректний вигляд для НЕАКТИВНОЇ кнопки -->
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="btnBorder" Property="Background" Value="#2D2D2D"/>
                                 <Setter Property="Foreground" Value="#A0A0A0"/>
@@ -75,7 +74,7 @@
         <Menu Grid.Row="0" Background="#181818" Padding="10,6" BorderThickness="0,0,0,1" BorderBrush="#2A2A2A">
             <MenuItem Header="Розбивка бази" Click="MenuSplit_Click" Foreground="#E0E0E0" FontSize="13" Margin="0,0,8,0"/>
             <MenuItem Header="Об'єднання декількох баз" Click="MenuMerge_Click" Foreground="#E0E0E0" FontSize="13" Margin="0,0,8,0"/>
-            <MenuItem Header="Тестування" Click="MenuTest_Click" Foreground="#FFB86C" FontSize="13" Margin="0,0,8,0"/>
+            <MenuItem Header="Тестування" Click="MenuTest_Click" Foreground="#E0E0E0" FontSize="13" Margin="0,0,8,0"/>
             <MenuItem Header="Довідка" Click="MenuHelp_Click" Foreground="#E0E0E0" FontSize="13" Margin="0,0,8,0"/>
             <MenuItem Header="Вихід" Click="MenuExit_Click" Foreground="#E0E0E0" FontSize="13"/>
         </Menu>
@@ -144,14 +143,20 @@
 
             <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,5">
                 <Button Content="➕ Додати файли (або перетягніть нижче)" Style="{StaticResource ModernButtonStyle}" Click="BtnAddMergeFiles_Click"/>
-                <!-- ТУТ БУЛА ПОМИЛКА: додано Style -->
-                <Button x:Name="BtnClearMergeFiles" Content="🗑 Очистити" Style="{StaticResource ModernButtonStyle}" Background="#CF6679" Margin="10,0,0,0" Click="BtnClearMergeFiles_Click"/>
+                <Button x:Name="BtnClearMergeFiles" Content="🗑 Очистити все" Style="{StaticResource ModernButtonStyle}" Background="#CF6679" Margin="10,0,0,0" Click="BtnClearMergeFiles_Click"/>
             </StackPanel>
 
             <ListBox Grid.Row="2" x:Name="ListMergeFiles" Margin="0,10" 
                      AllowDrop="True" 
                      DragEnter="ListMergeFiles_DragEnter" 
-                     Drop="ListMergeFiles_Drop"/>
+                     Drop="ListMergeFiles_Drop"
+                     KeyDown="ListMergeFiles_KeyDown">
+                <ListBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Видалити обране" Click="RemoveSelectedMergeFiles_Click"/>
+                    </ContextMenu>
+                </ListBox.ContextMenu>
+            </ListBox>
 
             <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,5,0,0">
                 <Button x:Name="BtnRunMerge" Content="🔗 Об'єднати все в один файл" Style="{StaticResource ModernButtonStyle}" 
@@ -177,10 +182,15 @@
                 <TextBlock Text="2. Вихідні шматки (які клеїли):" Foreground="#AAA" FontSize="13" Margin="0,0,0,5"/>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
                     <Button Content="➕ Додати" Style="{StaticResource ModernButtonStyle}" Padding="15,5" MinHeight="30" Click="BtnAddTestFiles_Click"/>
-                    <!-- ТУТ БУЛА ПОМИЛКА: додано Style -->
-                    <Button Content="🗑 Очистити" Style="{StaticResource ModernButtonStyle}" Background="#CF6679" Padding="15,5" MinHeight="30" Margin="10,0,0,0" Click="BtnClearTestFiles_Click"/>
+                    <Button Content="🗑 Очистити все" Style="{StaticResource ModernButtonStyle}" Background="#CF6679" Padding="15,5" MinHeight="30" Margin="10,0,0,0" Click="BtnClearTestFiles_Click"/>
                 </StackPanel>
-                <ListBox x:Name="ListTestFiles" Height="150" Margin="0,0,0,20" AllowDrop="True" DragEnter="ListTestFiles_DragEnter" Drop="ListTestFiles_Drop"/>
+                <ListBox x:Name="ListTestFiles" Height="150" Margin="0,0,0,20" AllowDrop="True" DragEnter="ListTestFiles_DragEnter" Drop="ListTestFiles_Drop" KeyDown="ListTestFiles_KeyDown">
+                    <ListBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Видалити обране" Click="RemoveSelectedTestFiles_Click"/>
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
+                </ListBox>
 
                 <TextBlock Text="3. Запуск порівняння:" Foreground="#AAA" FontSize="13" Margin="0,0,0,5"/>
                 <Button x:Name="BtnRunTest" Content="🔍 Знайти втрачені рядки" Style="{StaticResource ModernButtonStyle}"

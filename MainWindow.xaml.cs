@@ -5,10 +5,10 @@ using System.IO;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
-using Microsoft.Win32;
+using System.Windows.Input;
 using TPDSSDataManager.Models;
 using TPDSSDataManager.Services;
-
+using static System.Net.WebRequestMethods;
 
 namespace TPDSSDataManager
 {
@@ -27,12 +27,18 @@ namespace TPDSSDataManager
         private CancellationTokenSource? _mergeCancellationTokenSource;
 
         private readonly DatabaseManager _dbManager;
-        private readonly string CURRENT_VERSION = "1.5.0";
+    
+
+        private readonly string CURRENT_VERSION = "1.5.1";
 
         public MainWindow()
         {
+            
+
             InitializeComponent();
             _dbManager = new DatabaseManager();
+
+          
         }
 
         // --- МЕНЮ ТА НАВІГАЦІЯ ---
@@ -55,7 +61,7 @@ namespace TPDSSDataManager
         // --- ЛОГІКА РОЗБИВКИ (Split) ---
         private async void BtnSelectSource_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new OpenFileDialog { Filter = "Access Files (*.accdb)|*.accdb" };
+            var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "Access Files (*.accdb)|*.accdb" };
             if (dlg.ShowDialog() == true)
             {
                 _sourceSplitPath = dlg.FileName;
@@ -113,7 +119,7 @@ namespace TPDSSDataManager
                 return;
             }
 
-            var folderDlg = new OpenFileDialog { CheckFileExists = false, FileName = "Вибір папки", Title = "Куди зберігати?" };
+            var folderDlg = new Microsoft.Win32.OpenFileDialog { CheckFileExists = false, FileName = "Вибір папки", Title = "Куди зберігати?" };
             if (folderDlg.ShowDialog() != true) return;
 
             string outputDir = Path.GetDirectoryName(folderDlg.FileName) ?? "";
@@ -122,7 +128,6 @@ namespace TPDSSDataManager
             try
             {
                 var progress = new Progress<string>(status => TxtSubStatus.Text = status);
-
                 await _dbManager.SplitDatabasesAsync(_sourceSplitPath, outputDir, tasksToRun, progress);
 
                 TxtStatus.Text = "✅ Розбивку завершено!";
@@ -141,11 +146,8 @@ namespace TPDSSDataManager
         // --- ЛОГІКА ОБ'ЄДНАННЯ (Merge) ---
         private void BtnAddMergeFiles_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new OpenFileDialog { Multiselect = true, Filter = "Access|*.accdb" };
-            if (dlg.ShowDialog() == true)
-            {
-                AddFilesToMergeList(dlg.FileNames);
-            }
+            var dlg = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Filter = "Access|*.accdb" };
+            if (dlg.ShowDialog() == true) AddFilesToMergeList(dlg.FileNames);
         }
 
         private void BtnClearMergeFiles_Click(object sender, RoutedEventArgs e)
@@ -153,6 +155,25 @@ namespace TPDSSDataManager
             _mergeFiles.Clear();
             ListMergeFiles.Items.Clear();
             BtnRunMerge.IsEnabled = false;
+        }
+
+        // Видалення виділених файлів зі списку злиття (по кнопці Del або контекстному меню)
+        private void ListMergeFiles_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Delete) RemoveSelectedMergeFiles();
+        }
+
+        private void RemoveSelectedMergeFiles_Click(object sender, RoutedEventArgs e) => RemoveSelectedMergeFiles();
+
+        private void RemoveSelectedMergeFiles()
+        {
+            int index = ListMergeFiles.SelectedIndex;
+            if (index >= 0)
+            {
+                _mergeFiles.RemoveAt(index);
+                ListMergeFiles.Items.RemoveAt(index);
+                BtnRunMerge.IsEnabled = _mergeFiles.Count > 0;
+            }
         }
 
         private void ListMergeFiles_DragEnter(object sender, DragEventArgs e)
@@ -184,18 +205,15 @@ namespace TPDSSDataManager
                     hasNewFiles = true;
                 }
             }
-
-            if (hasNewFiles)
-                BtnRunMerge.IsEnabled = true;
+            if (hasNewFiles) BtnRunMerge.IsEnabled = true;
         }
 
         private async void BtnRunMerge_Click(object sender, RoutedEventArgs e)
         {
-            var sfd = new SaveFileDialog { Filter = "Access|*.accdb", FileName = "result.accdb" };
+            var sfd = new Microsoft.Win32.SaveFileDialog { Filter = "Access|*.accdb", FileName = "result.accdb" };
             if (sfd.ShowDialog() != true) return;
 
             string resultPath = sfd.FileName;
-
             _mergeCancellationTokenSource = new CancellationTokenSource();
 
             SetLoading(true, "Об'єднання баз...");
@@ -206,7 +224,6 @@ namespace TPDSSDataManager
             try
             {
                 var progress = new Progress<string>(status => TxtSubStatus.Text = status);
-
                 await _dbManager.MergeDatabasesAsync(_mergeFiles, resultPath, progress, _mergeCancellationTokenSource.Token);
 
                 TxtStatus.Text = "✅ Об'єднання завершено!";
@@ -244,7 +261,7 @@ namespace TPDSSDataManager
         // --- ЛОГІКА ТЕСТУВАННЯ ---
         private void BtnSelectTestMerged_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new OpenFileDialog { Filter = "Access Files (*.accdb)|*.accdb" };
+            var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "Access Files (*.accdb)|*.accdb" };
             if (dlg.ShowDialog() == true)
             {
                 _testMergedPath = dlg.FileName;
@@ -255,7 +272,7 @@ namespace TPDSSDataManager
 
         private void BtnAddTestFiles_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new OpenFileDialog { Multiselect = true, Filter = "Access|*.accdb" };
+            var dlg = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Filter = "Access|*.accdb" };
             if (dlg.ShowDialog() == true) AddTestFiles(dlg.FileNames);
         }
 
@@ -264,6 +281,25 @@ namespace TPDSSDataManager
             _testSourceFiles.Clear();
             ListTestFiles.Items.Clear();
             CheckTestReady();
+        }
+
+        // Видалення виділених файлів зі списку тестування
+        private void ListTestFiles_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Delete) RemoveSelectedTestFiles();
+        }
+
+        private void RemoveSelectedTestFiles_Click(object sender, RoutedEventArgs e) => RemoveSelectedTestFiles();
+
+        private void RemoveSelectedTestFiles()
+        {
+            int index = ListTestFiles.SelectedIndex;
+            if (index >= 0)
+            {
+                _testSourceFiles.RemoveAt(index);
+                ListTestFiles.Items.RemoveAt(index);
+                CheckTestReady();
+            }
         }
 
         private void ListTestFiles_DragEnter(object sender, DragEventArgs e)
